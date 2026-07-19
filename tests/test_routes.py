@@ -261,6 +261,55 @@ class RouteTests(unittest.TestCase):
         self.assertIsInstance(outbound_payload["prompt_cache_key"], str)
 
     @patch("chatmock.routes_openai.start_upstream_raw_request")
+    def test_responses_route_backfills_empty_completed_output_from_done_items(self, mock_start) -> None:
+        message_item = {
+            "id": "msg_123",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "hello"}],
+        }
+        function_item = {
+            "id": "call_123",
+            "type": "function_call",
+            "status": "completed",
+            "name": "lookup",
+            "arguments": "{}",
+            "call_id": "call_123",
+        }
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {
+                        "type": "response.created",
+                        "response": {"id": "resp_123", "object": "response", "status": "in_progress"},
+                    },
+                    {"type": "response.output_item.done", "item": function_item, "output_index": 1},
+                    {"type": "response.output_item.done", "item": message_item, "output_index": 0},
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp_123",
+                            "object": "response",
+                            "status": "completed",
+                            "output": [],
+                        },
+                    },
+                ],
+                headers={"Content-Type": "text/event-stream"},
+            ),
+            None,
+        )
+
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "gpt-5.6-sol-medium", "input": "hello"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["output"], [message_item, function_item])
+
+    @patch("chatmock.routes_openai.start_upstream_raw_request")
     def test_responses_route_honors_debug_model_override(self, mock_start) -> None:
         app = create_app(debug_model="gpt-5.4")
         client = app.test_client()
